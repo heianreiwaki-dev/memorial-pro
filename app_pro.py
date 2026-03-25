@@ -110,6 +110,11 @@ def pil_to_b64(img):
     img.save(buf, format="PNG")
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
+def bg_image_to_pil(bg_b64: str, W: int, H: int) -> Image.Image:
+    """Base64文字列からPIL Imageに戻す（st_canvas用）"""
+    data = bg_b64.split(",", 1)[1]
+    return Image.open(io.BytesIO(base64.b64decode(data))).convert("RGBA").resize((W, H))
+
 
 def wrap_text(text, max_chars_per_line):
     """
@@ -361,13 +366,36 @@ with st.sidebar:
         st.rerun()
 
 # --- 🖼️ デザイン画面 (キャンバス) ---
-# 背景画像を毎回新規生成（キャッシュなし）
-bg_img = make_bg_image(S["design"], selected_size)
+# 背景画像：デザイン・サイズが変わった場合のみ再生成しセッションに保持
+bg_cache_key = f"{S['design']}_{selected_size}"
+if S.get("bg_cache_key") != bg_cache_key:
+    bg_pil = make_bg_image(S["design"], selected_size)
+    S["bg_b64"] = pil_to_b64(bg_pil)
+    S["bg_cache_key"] = bg_cache_key
+
+# st_canvas には PIL Image を渡す（内部でURLに変換される）
+# ただし、直接渡すと環境によって失敗するため、b64→PIL→渡す方式で確実に表示
+bg_img = bg_image_to_pil(S["bg_b64"], W_val, H_val)
 
 st.subheader("2. 写真・文字を配置してください")
 
 # キーにすべての変動要素を含めてリフレッシュを確実に
-c_key = f"canvas_v11_{S['design']}_{S['canvas_key']}_{selected_size}"
+c_key = f"canvas_v12_{S['design']}_{S['canvas_key']}_{selected_size}"
+
+# 背景をHTMLとして直接表示することで、st_canvasの背景表示問題を回避
+st.markdown(
+    f"""
+    <style>
+    /* st_canvasのlowerCanvas（背景レイヤー）にデザイン画像を重ねる */
+    canvas.lower-canvas {{
+        background-image: url("{S['bg_b64']}") !important;
+        background-size: 100% 100% !important;
+        background-repeat: no-repeat !important;
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 canvas_result = st_canvas(
     fill_color="rgba(0,0,0,0)",
@@ -384,7 +412,8 @@ st.divider()
 if st.button("✅ 完成画像を確定する", type="primary", use_container_width=True):
     if canvas_result.image_data is not None:
         rgba = Image.fromarray(canvas_result.image_data.astype(np.uint8), "RGBA")
-        final = Image.alpha_composite(bg_img.convert("RGBA"), rgba).convert("RGB")
+        bg_final = bg_image_to_pil(S["bg_b64"], W_val, H_val)
+        final = Image.alpha_composite(bg_final.convert("RGBA"), rgba).convert("RGB")
 
         st.success("プレビュー生成完了！")
         col1, col2 = st.columns(2)
