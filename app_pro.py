@@ -373,34 +373,45 @@ if S.get("bg_cache_key") != bg_cache_key:
     S["bg_b64"] = pil_to_b64(bg_pil)
     S["bg_cache_key"] = bg_cache_key
 
-# st_canvas には PIL Image を渡す（内部でURLに変換される）
-# ただし、直接渡すと環境によって失敗するため、b64→PIL→渡す方式で確実に表示
-bg_img = bg_image_to_pil(S["bg_b64"], W_val, H_val)
-
 st.subheader("2. 写真・文字を配置してください")
 
-# キーにすべての変動要素を含めてリフレッシュを確実に
-c_key = f"canvas_v12_{S['design']}_{S['canvas_key']}_{selected_size}"
+c_key = f"canvas_v14_{S['design']}_{S['canvas_key']}_{selected_size}"
 
-# 背景をHTMLとして直接表示することで、st_canvasの背景表示問題を回避
-st.markdown(
-    f"""
-    <style>
-    /* st_canvasのlowerCanvas（背景レイヤー）にデザイン画像を重ねる */
-    canvas.lower-canvas {{
-        background-image: url("{S['bg_b64']}") !important;
-        background-size: 100% 100% !important;
-        background-repeat: no-repeat !important;
-    }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+import streamlit.components.v1 as components
+
+# ─────────────────────────────────────────────────────────────
+# 【確実な背景表示】
+# st_canvas の background_image は Streamlit バージョンによって
+# 動作しないことがある。
+# 解決策：背景画像を「selectable=false・最背面の画像オブジェクト」
+# として initial_drawing の先頭に追加し、常に表示させる。
+# ─────────────────────────────────────────────────────────────
+bg_obj = {
+    "type": "image",
+    "src": S["bg_b64"],
+    "left": 0,
+    "top": 0,
+    "scaleX": 1.0,
+    "scaleY": 1.0,
+    "originX": "left",
+    "originY": "top",
+    "selectable": False,
+    "evented": False,
+    "lockMovementX": True,
+    "lockMovementY": True,
+    "lockScalingX": True,
+    "lockScalingY": True,
+    "lockRotation": True,
+    "hasControls": False,
+    "hasBorders": False,
+}
+
+all_objects = [bg_obj] + S["canvas_objects"]
 
 canvas_result = st_canvas(
     fill_color="rgba(0,0,0,0)",
-    background_image=bg_img,
-    initial_drawing={"objects": S["canvas_objects"]},
+    background_color="#ffffff",
+    initial_drawing={"objects": all_objects},
     height=H_val,
     width=W_val,
     drawing_mode="transform",
@@ -411,9 +422,13 @@ canvas_result = st_canvas(
 st.divider()
 if st.button("✅ 完成画像を確定する", type="primary", use_container_width=True):
     if canvas_result.image_data is not None:
+        # bg_obj をキャンバスオブジェクトに含めているため、
+        # image_data にはすでに背景＋写真＋テキストが合成されている
         rgba = Image.fromarray(canvas_result.image_data.astype(np.uint8), "RGBA")
-        bg_final = bg_image_to_pil(S["bg_b64"], W_val, H_val)
-        final = Image.alpha_composite(bg_final.convert("RGBA"), rgba).convert("RGB")
+        # 白背景と合成（透明部分を白に）
+        white_bg = Image.new("RGB", (W_val, H_val), (255, 255, 255))
+        white_bg.paste(rgba.convert("RGB"), mask=rgba.split()[3])
+        final = white_bg
 
         st.success("プレビュー生成完了！")
         col1, col2 = st.columns(2)
