@@ -6,7 +6,7 @@ import os
 import base64
 import numpy as np
 
-# --- Streamlit用パッチ ---
+# --- Streamlit用パッチ (背景表示エラー回避) ---
 import streamlit.elements.image as st_image
 import streamlit.elements.lib.image_utils as image_utils
 if not hasattr(st_image, "image_to_url"):
@@ -61,48 +61,15 @@ def load_designs():
 DESIGNS = load_designs()
 
 def make_bg_image(design_name, size_key):
-    """
-    背景（枠）をキャンバスサイズにピッタリ合わせて作成。
-    デザインファイルがある場合はそれを使い、ない場合はデフォルト枠を描画する。
-    """
     W, H = PAPER_SIZES[size_key]
     path = DESIGNS.get(design_name)
-
     if path and os.path.exists(path):
         bg = Image.open(path).convert("RGBA").resize((W, H), Image.LANCZOS)
     else:
-        # --- デフォルト背景：白地 + 二重枠線を描画 ---
         bg = Image.new("RGBA", (W, H), (250, 248, 243, 255))
         draw = ImageDraw.Draw(bg)
-        # 外枠
         border_outer = 10
-        draw.rectangle(
-            [border_outer, border_outer, W - border_outer, H - border_outer],
-            outline=(160, 130, 90, 255),
-            width=3
-        )
-        # 内枠
-        border_inner = 20
-        draw.rectangle(
-            [border_inner, border_inner, W - border_inner, H - border_inner],
-            outline=(160, 130, 90, 180),
-            width=1
-        )
-        # 四隅の装飾
-        corner_size = 30
-        corners = [
-            (border_outer, border_outer),
-            (W - border_outer - corner_size, border_outer),
-            (border_outer, H - border_outer - corner_size),
-            (W - border_outer - corner_size, H - border_outer - corner_size),
-        ]
-        for cx, cy in corners:
-            draw.rectangle(
-                [cx, cy, cx + corner_size, cy + corner_size],
-                outline=(140, 110, 70, 200),
-                width=2
-            )
-
+        draw.rectangle([border_outer, border_outer, W - border_outer, H - border_outer], outline=(160, 130, 90, 255), width=3)
     return bg
 
 def pil_to_b64(img):
@@ -110,19 +77,8 @@ def pil_to_b64(img):
     img.save(buf, format="PNG")
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
-def bg_image_to_pil(bg_b64: str, W: int, H: int) -> Image.Image:
-    """Base64文字列からPIL Imageに戻す（st_canvas用）"""
-    data = bg_b64.split(",", 1)[1]
-    return Image.open(io.BytesIO(base64.b64decode(data))).convert("RGBA").resize((W, H))
-
-
 def wrap_text(text, max_chars_per_line):
-    """
-    テキストを指定文字数で折り返す（日本語・英語対応）。
-    max_chars_per_line: 1行あたりの最大文字数（全角基準）
-    """
     lines = []
-    # まず既存の改行で分割
     for paragraph in text.split("\n"):
         if not paragraph:
             lines.append("")
@@ -130,7 +86,6 @@ def wrap_text(text, max_chars_per_line):
         current_line = ""
         char_count = 0
         for char in paragraph:
-            # 全角文字は2、半角は1としてカウント
             char_width = 2 if ord(char) > 0x7F else 1
             if char_count + char_width > max_chars_per_line * 2:
                 lines.append(current_line)
@@ -143,33 +98,20 @@ def wrap_text(text, max_chars_per_line):
             lines.append(current_line)
     return "\n".join(lines)
 
-
 def calculate_font_size_and_wrap(text, area_width, area_height, font_size_hint=36):
-    """
-    テキストをエリア内に収まるよう、フォントサイズと折り返しを自動調整する。
-    Returns: (wrapped_text, font_size)
-    """
     font_size = font_size_hint
     min_font = 14
-
     while font_size >= min_font:
-        # 1行あたりに収まるおよその文字数（全角基準）
         chars_per_line = max(1, int(area_width / font_size))
         wrapped = wrap_text(text, chars_per_line)
         line_count = len(wrapped.split("\n"))
         total_height = line_count * (font_size + 8)
-
         if total_height <= area_height:
             return wrapped, font_size
-
         font_size -= 2
+    return wrap_text(text, max(1, int(area_width / min_font))), min_font
 
-    # 最小フォントでも収まらない場合は最小で返す
-    chars_per_line = max(1, int(area_width / min_font))
-    return wrap_text(text, chars_per_line), min_font
-
-
-# --- 🤖 自動レイアウト (最大化ロジック) ---
+# --- 🤖 自動レイアウト ---
 def auto_layout(photo_infos, text_defs, card_w, card_h):
     n = len(photo_infos)
     objects = []
@@ -177,25 +119,15 @@ def auto_layout(photo_infos, text_defs, card_w, card_h):
     x0, y0 = margin, margin
     aw, ah = card_w - margin * 2, card_h - margin * 2
 
-    # テキストエリアの高さを動的計算
     full_text = "\n".join([t.get("text", "") for t in text_defs])
-    
     if full_text:
-        # テキスト行数に応じてエリア高さを決定（最大30%）
-        estimated_font = 32
-        chars_per_line = max(1, int(aw / estimated_font))
-        wrapped_preview = wrap_text(full_text, chars_per_line)
-        line_count = len(wrapped_preview.split("\n"))
-        needed_text_h = min(int(ah * 0.35), line_count * (estimated_font + 10) + 20)
-        text_zone_h = max(int(ah * 0.15), needed_text_h)
+        text_zone_h = min(int(ah * 0.35), len(full_text.split("\n")) * 42 + 20)
     else:
         text_zone_h = 0
-
     ph_area_h = ah - text_zone_h - (GAP if full_text else 0)
 
     rects = []
-    if n == 1:
-        rects = [(x0, y0, aw, ph_area_h)]
+    if n == 1: rects = [(x0, y0, aw, ph_area_h)]
     elif n == 2:
         pw = (aw - GAP) // 2
         rects = [(x0, y0, pw, ph_area_h), (x0 + pw + GAP, y0, pw, ph_area_h)]
@@ -203,75 +135,39 @@ def auto_layout(photo_infos, text_defs, card_w, card_h):
         pw_l = int(aw * 0.55) - GAP // 2
         pw_r = aw - pw_l - GAP
         ph_r = (ph_area_h - GAP) // 2
-        rects = [
-            (x0, y0, pw_l, ph_area_h),
-            (x0 + pw_l + GAP, y0, pw_r, ph_r),
-            (x0 + pw_l + GAP, y0 + ph_r + GAP, pw_r, ph_r)
-        ]
+        rects = [(x0, y0, pw_l, ph_area_h), (x0 + pw_l + GAP, y0, pw_r, ph_r), (x0 + pw_l + GAP, y0 + ph_r + GAP, pw_r, ph_r)]
     elif n >= 4:
         cols = 2 if n <= 4 else 3
         rows = (n + cols - 1) // cols
-        pw = (aw - GAP * (cols - 1)) // cols
-        ph = (ph_area_h - GAP * (rows - 1)) // rows
-        for i in range(n):
-            rects.append((x0 + (i % cols) * (pw + GAP), y0 + (i // cols) * (ph + GAP), pw, ph))
+        pw, ph = (aw - GAP * (cols - 1)) // cols, (ph_area_h - GAP * (rows - 1)) // rows
+        for i in range(n): rects.append((x0 + (i % cols) * (pw + GAP), y0 + (i // cols) * (ph + GAP), pw, ph))
 
     for info, (rx, ry, rw, rh) in zip(photo_infos, rects):
         ow, oh = info["w"], info["h"]
         scale = min(rw / ow, rh / oh)
         objects.append({
-            "type": "image",
-            "src": info["src"],
-            "left": int(rx + (rw - ow * scale) // 2),
-            "top": int(ry + (rh - oh * scale) // 2),
-            "scaleX": scale,
-            "scaleY": scale,
-            "originX": "left",
-            "originY": "top"
+            "type": "image", "src": info["src"], "left": int(rx + (rw - ow * scale) // 2), "top": int(ry + (rh - oh * scale) // 2),
+            "scaleX": scale, "scaleY": scale, "originX": "left", "originY": "top", "_id": info.get("_id")
         })
 
-    # テキストオブジェクト：折り返し・フォントサイズ自動調整
     if full_text:
         ty = y0 + ph_area_h + GAP
         remaining_h = text_zone_h
         for t in text_defs:
-            raw_text = t.get("text", "")
-            if not raw_text:
-                continue
-            hint_size = t.get("fontSize", 32)
-            wrapped, final_size = calculate_font_size_and_wrap(
-                raw_text, aw - 20, remaining_h, hint_size
-            )
+            wrapped, final_size = calculate_font_size_and_wrap(t.get("text", ""), aw - 20, remaining_h, t.get("fontSize", 32))
             obj = dict(t)
-            obj["text"] = wrapped
-            obj["fontSize"] = final_size
-            obj["left"] = x0 + aw // 2
-            obj["top"] = ty
-            obj["originX"] = "center"
-            # fabric.js でのテキスト折り返し設定
-            obj["width"] = aw - 20
-            obj["textAlign"] = "center"
+            obj.update({"text": wrapped, "fontSize": final_size, "left": x0 + aw // 2, "top": ty, "originX": "center", "width": aw - 20, "textAlign": "center"})
             objects.append(obj)
-            used_h = len(wrapped.split("\n")) * (final_size + 8) + 10
-            ty += used_h
-            remaining_h -= used_h
-
+            ty += len(wrapped.split("\n")) * (final_size + 8) + 10
     return objects
-
 
 # ==========================================
 # メインセッション
 # ==========================================
 if "S" not in st.session_state:
     st.session_state.S = {
-        "canvas_objects": [],
-        "photo_store": [],
-        "canvas_key": 0,
-        "design": list(DESIGNS.keys())[0],
-        "text_defs": [],
-        "processed_files": set(),
-        "color_mode": "代表的な色",
-        "custom_color": "#333333"
+        "canvas_objects": [], "photo_store": [], "canvas_key": 0, "design": list(DESIGNS.keys())[0],
+        "text_defs": [], "processed_files": set(), "color_mode": "代表的な色", "custom_color": "#333333"
     }
 S = st.session_state.S
 
@@ -285,11 +181,7 @@ with st.sidebar:
     selected_size = st.selectbox("出力サイズ", list(PAPER_SIZES.keys()))
     W_val, H_val = PAPER_SIZES[selected_size]
 
-    new_design = st.selectbox(
-        "デザイン選択 (枠)",
-        list(DESIGNS.keys()),
-        index=list(DESIGNS.keys()).index(S["design"])
-    )
+    new_design = st.selectbox("デザイン選択 (枠)", list(DESIGNS.keys()), index=list(DESIGNS.keys()).index(S["design"]))
     if new_design != S["design"]:
         S["design"] = new_design
         S["canvas_key"] += 1
@@ -302,54 +194,68 @@ with st.sidebar:
         if new_fs and st.button(f"{len(new_fs)}枚を反映"):
             for f in new_fs:
                 img = Image.open(f).convert("RGBA")
-                resized = img.resize(
-                    (int(img.width * (350 / max(img.size))),
-                     int(img.height * (350 / max(img.size)))),
-                    Image.LANCZOS
-                )
-                info = {"src": pil_to_b64(resized), "w": resized.width, "h": resized.height}
+                resized = img.resize((int(img.width * (350 / max(img.size))), int(img.height * (350 / max(img.size)))), Image.LANCZOS)
+                photo_id = f"photo_{f.name}"
+                info = {"src": pil_to_b64(resized), "w": resized.width, "h": resized.height, "_id": photo_id}
                 S["photo_store"].append(info)
-                S["canvas_objects"].append({
-                    "type": "image", "src": info["src"],
-                    "left": 100, "top": 100, "scaleX": 1.0, "scaleY": 1.0
-                })
+                S["canvas_objects"].append({"type": "image", "src": info["src"], "left": 100, "top": 100, "scaleX": 1.0, "scaleY": 1.0, "_id": photo_id})
                 S["processed_files"].add(f.name)
             S["canvas_key"] += 1
             st.rerun()
 
     st.header("✍️ 文字・色設定")
-    msg = st.text_area("メッセージ（長文も自動で折り返されます）", height=80)
-
+    msg = st.text_area("メッセージ", height=80)
     S["color_mode"] = st.radio("色の選び方", ["代表的な色", "オリジナル"], horizontal=True)
     if S["color_mode"] == "代表的な色":
         t_preset = st.selectbox("色リスト", list(PRESET_TEXT_COLORS.keys()))
         final_color = PRESET_TEXT_COLORS[t_preset]
-        st.markdown(
-            f'<div style="width:30px;height:30px;background-color:{final_color};'
-            f'border:1px solid #ccc;border-radius:5px;"></div>',
-            unsafe_allow_html=True
-        )
+        st.markdown(f'<div style="width:30px;height:30px;background-color:{final_color};border:1px solid #ccc;border-radius:5px;"></div>', unsafe_allow_html=True)
     else:
         final_color = st.color_picker("オリジナル色選択", S["custom_color"])
         S["custom_color"] = final_color
 
-    font_size_input = st.slider("文字サイズ（基準）", min_value=16, max_value=60, value=32, step=2)
-
+    font_size_input = st.slider("基準サイズ", 16, 60, 32, 2)
     if st.button("文字を追加"):
         if msg:
-            t_obj = {
-                "type": "i-text",
-                "text": msg,
-                "fill": final_color,
-                "fontSize": font_size_input,
-                "fontFamily": "ゴシック体",
-                "textAlign": "center",
-                "width": W_val - (CARD_INNER_PAD + 20) * 2
-            }
+            text_id = f"text_{len(S['text_defs'])}"
+            t_obj = {"type": "i-text", "text": msg, "fill": final_color, "fontSize": font_size_input, "fontFamily": "ゴシック体", "textAlign": "center", "width": W_val - 100, "_id": text_id}
             S["canvas_objects"].append(t_obj)
             S["text_defs"].append(t_obj)
             S["canvas_key"] += 1
             st.rerun()
+
+    # ──────────────────────────────────────────
+    # 【新機能：個別削除メニュー】
+    # ──────────────────────────────────────────
+    if S["text_defs"] or S["photo_store"]:
+        st.divider()
+        st.subheader("🗑️ 素材の個別削除")
+        
+        # 文字の削除
+        for i, t in enumerate(S["text_defs"]):
+            col1, col2 = st.columns([4, 1])
+            col1.caption(f"✍️: {t['text'][:10]}...")
+            if col2.button("❌", key=f"del_txt_{i}"):
+                # 削除処理
+                target_id = t.get("_id")
+                S["text_defs"].pop(i)
+                S["canvas_objects"] = [obj for obj in S["canvas_objects"] if obj.get("_id") != target_id]
+                S["canvas_key"] += 1
+                st.rerun()
+        
+        # 写真の削除
+        for i, p in enumerate(S["photo_store"]):
+            col1, col2 = st.columns([4, 1])
+            col1.caption(f"📷: 写真 {i+1}")
+            if col2.button("❌", key=f"del_img_{i}"):
+                target_id = p.get("_id")
+                S["photo_store"].pop(i)
+                S["canvas_objects"] = [obj for obj in S["canvas_objects"] if obj.get("_id") != target_id]
+                # 処理済みファイル名からも削除
+                file_to_remove = next((name for name, pid in zip(list(S["processed_files"]), [p.get("_id") for p in S["photo_store"]]) if pid == target_id), None)
+                if file_to_remove: S["processed_files"].discard(file_to_remove)
+                S["canvas_key"] += 1
+                st.rerun()
 
     st.divider()
     mode = st.radio("レイアウト", ["手動", "AI自動レイアウト"])
@@ -359,14 +265,12 @@ with st.sidebar:
         st.rerun()
 
     if st.button("🔄 全リセット"):
-        for k in ["canvas_objects", "photo_store", "text_defs"]:
-            S[k] = []
+        for k in ["canvas_objects", "photo_store", "text_defs"]: S[k] = []
         S["processed_files"] = set()
         S["canvas_key"] += 1
         st.rerun()
 
-# --- 🖼️ デザイン画面 (キャンバス) ---
-# 背景画像：デザイン・サイズが変わった場合のみ再生成しセッションに保持
+# --- 🖼️ キャンバス ---
 bg_cache_key = f"{S['design']}_{selected_size}"
 if S.get("bg_cache_key") != bg_cache_key:
     bg_pil = make_bg_image(S["design"], selected_size)
@@ -374,76 +278,27 @@ if S.get("bg_cache_key") != bg_cache_key:
     S["bg_cache_key"] = bg_cache_key
 
 st.subheader("2. 写真・文字を配置してください")
-
-c_key = f"canvas_v14_{S['design']}_{S['canvas_key']}_{selected_size}"
-
-import streamlit.components.v1 as components
-
-# ─────────────────────────────────────────────────────────────
-# 【確実な背景表示】
-# st_canvas の background_image は Streamlit バージョンによって
-# 動作しないことがある。
-# 解決策：背景画像を「selectable=false・最背面の画像オブジェクト」
-# として initial_drawing の先頭に追加し、常に表示させる。
-# ─────────────────────────────────────────────────────────────
-bg_obj = {
-    "type": "image",
-    "src": S["bg_b64"],
-    "left": 0,
-    "top": 0,
-    "scaleX": 1.0,
-    "scaleY": 1.0,
-    "originX": "left",
-    "originY": "top",
-    "selectable": False,
-    "evented": False,
-    "lockMovementX": True,
-    "lockMovementY": True,
-    "lockScalingX": True,
-    "lockScalingY": True,
-    "lockRotation": True,
-    "hasControls": False,
-    "hasBorders": False,
-}
-
+bg_obj = {"type": "image", "src": S["bg_b64"], "left": 0, "top": 0, "selectable": False, "evented": False}
 all_objects = [bg_obj] + S["canvas_objects"]
 
 canvas_result = st_canvas(
-    fill_color="rgba(0,0,0,0)",
-    background_color="#ffffff",
-    initial_drawing={"objects": all_objects},
-    height=H_val,
-    width=W_val,
-    drawing_mode="transform",
-    key=c_key,
+    fill_color="rgba(0,0,0,0)", background_color="#ffffff", initial_drawing={"objects": all_objects},
+    height=H_val, width=W_val, drawing_mode="transform", key=f"canvas_v15_{S['canvas_key']}_{S['design']}"
 )
 
 # --- 📥 保存 ---
 st.divider()
 if st.button("✅ 完成画像を確定する", type="primary", use_container_width=True):
     if canvas_result.image_data is not None:
-        # bg_obj をキャンバスオブジェクトに含めているため、
-        # image_data にはすでに背景＋写真＋テキストが合成されている
         rgba = Image.fromarray(canvas_result.image_data.astype(np.uint8), "RGBA")
-        # 白背景と合成（透明部分を白に）
         white_bg = Image.new("RGB", (W_val, H_val), (255, 255, 255))
         white_bg.paste(rgba.convert("RGB"), mask=rgba.split()[3])
         final = white_bg
-
         st.success("プレビュー生成完了！")
         col1, col2 = st.columns(2)
-        with col1:
-            st.image(final, caption="完成見本", use_container_width=True)
+        with col1: st.image(final, use_container_width=True)
         with col2:
-            buf_j = io.BytesIO()
-            final.save(buf_j, format="JPEG", quality=95)
-            st.download_button(
-                "📥 JPEGで保存", buf_j.getvalue(), "memorial.jpg", "image/jpeg",
-                use_container_width=True
-            )
-            buf_p = io.BytesIO()
-            final.save(buf_p, format="PDF", resolution=100.0)
-            st.download_button(
-                "📥 PDFで保存", buf_p.getvalue(), "memorial.pdf", "application/pdf",
-                use_container_width=True
-            )
+            buf_j = io.BytesIO(); final.save(buf_j, format="JPEG", quality=95)
+            st.download_button("📥 JPEGで保存", buf_j.getvalue(), "memorial.jpg", "image/jpeg", use_container_width=True)
+            buf_p = io.BytesIO(); final.save(buf_p, format="PDF", resolution=100.0)
+            st.download_button("📥 PDFで保存", buf_p.getvalue(), "memorial.pdf", "application/pdf", use_container_width=True)
